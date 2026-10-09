@@ -1,0 +1,107 @@
+---
+- name: Déployer la todolist
+  hosts: my_infra
+  become: true
+  vars:
+    app_dir: /opt/todolist
+    app_repo: https://github.com/gaeldb/to-do-list-unsecure.git
+
+  tasks:
+    - name: Installer les paquets système
+      ansible.builtin.apt:
+        name:
+          - git
+          - python3-venv
+          - python3-pip
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Récupérer les sources depuis GitHub (branche main)
+      ansible.builtin.git:
+        repo: "{{ app_repo }}"
+        dest: "{{ app_dir }}"
+        version: main
+
+    - name: Installer les dépendances Python dans un venv
+      ansible.builtin.pip:
+        name:
+          - "django>=5.2,<5.3"
+          - pyyaml
+          - gunicorn
+        virtualenv: "{{ app_dir }}/venv"
+        virtualenv_command: python3 -m venv
+
+    - name: Appliquer les migrations Django
+      ansible.builtin.command:
+        cmd: "{{ app_dir }}/venv/bin/python manage.py migrate --noinput"
+        chdir: "{{ app_dir }}"
+      register: migrate
+      changed_when: "'No migrations to apply' not in migrate.stdout"
+
+    - name: Réglages propres à l'environnement (DEBUG selon le serveur)
+      ansible.builtin.copy:
+        dest: "{{ app_dir }}/todo/settings_env.py"
+        mode: "0644"
+        content: |
+          from .settings import *
+          DEBUG = {{ django_debug }}
+      notify: Redémarrer todolist
+
+    - name: Installer le service systemd todolist
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/todolist.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Todolist (Gunicorn)
+          After=network.target
+
+          [Service]
+          WorkingDirectory={{ app_dir }}
+          Environment=DJANGO_SETTINGS_MODULE=todo.settings_env
+          ExecStart={{ app_dir }}/venv/bin/gunicorn --bind 0.0.0.0:80 todo.wsgi
+          Restart=on-failure
+
+          [Install]
+          WantedBy=multi-user.target
+      notify: Redémarrer todolist
+
+    - name: Activer le service au démarrage et le lancer
+      ansible.builtin.systemd:
+        name: todolist
+        daemon_reload: true
+        enabled: true
+        state: started
+
+    - name: Appliquer les redémarrages en attente
+      ansible.builtin.meta: flush_handlers
+
+    - name: Tester que la page d'accueil répond
+      ansible.builtin.uri:
+        url: http://127.0.0.1/
+        status_code: 200
+      register: accueil
+      retries: 10
+      delay: 3
+      until: accueil.status == 200
+
+    - name: Récupérer une page inexistante pour vérifier le mode DEBUG
+      ansible.builtin.uri:
+        url: http://127.0.0.1/page-qui-nexiste-pas
+        status_code: 404
+        return_content: true
+      register: page404
+
+    - name: Vérifier que DEBUG correspond à l'environnement
+      ansible.builtin.assert:
+        that:
+          - ('DEBUG = True' in page404.content) == (django_debug | bool)
+        success_msg: "DEBUG={{ django_debug }} : conforme à l'environnement"
+
+  handlers:
+    - name: Redémarrer todolist
+      ansible.builtin.systemd:
+        name: todolist
+        state: restarted
+        daemon_reload: true
