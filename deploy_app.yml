@@ -20,8 +20,8 @@
     - name: Récupérer les sources depuis GitHub (branche main)
       ansible.builtin.git:
         repo: "{{ app_repo }}"
-        dest: "{{ app_dir }}"
-        version: "{{ app_branch | default('main') }}"
+        dest: /opt/todolist
+        version: "{{ app_branch }}"
 
     - name: Installer les dépendances Python dans un venv
       ansible.builtin.pip:
