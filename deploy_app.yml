@@ -22,6 +22,7 @@
         repo: "{{ app_repo }}"
         dest: /opt/todolist
         version: "{{ app_branch }}"
+        force: yes
 
     - name: Installer les dépendances Python dans un venv
       ansible.builtin.pip:
